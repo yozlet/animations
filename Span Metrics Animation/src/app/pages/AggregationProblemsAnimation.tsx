@@ -9,6 +9,37 @@ import {
   MessageSquareOff,
 } from "lucide-react";
 
+interface Span {
+  id: string;
+  service: string;
+  endpoint: string;
+  duration: number;
+  statusCode: number;
+  color: string;
+}
+
+const services = [
+  { name: "API Gateway", color: "#3b82f6" },
+  { name: "Auth Service", color: "#8b5cf6" },
+  { name: "User Service", color: "#10b981" },
+  { name: "Payment Service", color: "#f59e0b" },
+];
+
+const endpoints = ["/users", "/login", "/checkout", "/products"];
+const statusCodes = [200, 201, 400, 404, 500];
+
+function generateSpan(id: number): Span {
+  const service = services[Math.floor(Math.random() * services.length)];
+  return {
+    id: `span-${id}`,
+    service: service.name,
+    endpoint: endpoints[Math.floor(Math.random() * endpoints.length)],
+    duration: Math.random() * 400 + 100,
+    statusCode: statusCodes[Math.floor(Math.random() * statusCodes.length)],
+    color: service.color,
+  };
+}
+
 const TOTAL_SCENES = 9;
 
 const narrations = [
@@ -22,6 +53,102 @@ const narrations = [
   "Plus, every time you realise that you want to investigate a new dimension, you're out of luck unless you've been aggregating it from the start. Retrospective analysis becomes impossible, unless you want to go back and reprocess all your raw spans.",
   "So, you start off with as many dimensions as you think you'll need. If you have too few, you miss out on insights. Too many, and your aggregation tables explode in size - especially if some dimensions have high cardinality, like user IDs or request paths.",
 ];
+
+function Scene1() {
+  const [spans, setSpans] = useState<Span[]>([]);
+
+  useEffect(() => {
+    // Generate 4 spans with staggered timing
+    const timeouts: NodeJS.Timeout[] = [];
+    [0, 1, 2, 3].forEach((i) => {
+      const timeout = setTimeout(() => {
+        setSpans((prev) => [...prev, generateSpan(i)]);
+      }, i * 600);
+      timeouts.push(timeout);
+    });
+
+    return () => timeouts.forEach(clearTimeout);
+  }, []);
+
+  return (
+    <div className="flex flex-col gap-8 h-full">
+      {/* Span Cards */}
+      <div className="flex justify-center gap-4 flex-wrap">
+        <AnimatePresence>
+          {spans.map((span, index) => (
+            <motion.div
+              key={span.id}
+              initial={{ opacity: 0, y: -20, scale: 0.8 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ duration: 0.5 }}
+              className="p-4 rounded-lg border-2"
+              style={{
+                borderColor: span.color,
+                backgroundColor: `${span.color}20`,
+              }}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <div
+                  className="w-3 h-3 rounded-full"
+                  style={{ backgroundColor: span.color }}
+                />
+                <div className="font-semibold text-sm" style={{ color: span.color }}>
+                  {span.service}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                <div className="text-slate-400">Endpoint:</div>
+                <div className="text-slate-200">{span.endpoint}</div>
+                <div className="text-slate-400">Duration:</div>
+                <div className="text-slate-200">{span.duration.toFixed(0)}ms</div>
+                <div className="text-slate-400">Status:</div>
+                <div className="text-slate-200">{span.statusCode}</div>
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
+      {/* Bar Graph */}
+      <div className="flex-1 flex flex-col justify-end px-12 pb-8">
+        <div className="relative h-64">
+          {/* Y-axis label */}
+          <div className="absolute -left-8 top-0 bottom-0 flex items-center">
+            <div className="text-xs text-slate-400 -rotate-90 whitespace-nowrap">
+              Duration (ms)
+            </div>
+          </div>
+
+          {/* Bars */}
+          <div className="h-full flex items-end justify-center gap-8">
+            <AnimatePresence>
+              {spans.map((span) => (
+                <motion.div
+                  key={span.id}
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: `${(span.duration / 500) * 100}%`, opacity: 1 }}
+                  transition={{ duration: 0.5, delay: 0.2 }}
+                  className="w-16 rounded-t relative group"
+                  style={{ backgroundColor: span.color }}
+                >
+                  <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-xs text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {span.duration.toFixed(0)}ms
+                  </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+
+          {/* X-axis */}
+          <div className="absolute bottom-0 left-0 right-0 h-px bg-slate-600" />
+          <div className="absolute -bottom-6 left-0 right-0 text-center text-xs text-slate-400">
+            Spans
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function AggregationProblemsAnimation() {
   const [currentScene, setCurrentScene] = useState(0);
@@ -49,6 +176,19 @@ export default function AggregationProblemsAnimation() {
       console.log(`Scene ${currentScene + 1}:`, narrations[currentScene]);
     }
   }, [showCaptions, currentScene]);
+
+  const renderScene = () => {
+    switch (currentScene) {
+      case 0:
+        return <Scene1 />;
+      default:
+        return (
+          <div className="flex items-center justify-center h-full text-2xl text-slate-400">
+            Scene {currentScene + 1}
+          </div>
+        );
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-8">
@@ -93,10 +233,7 @@ export default function AggregationProblemsAnimation() {
               transition={{ duration: 0.3 }}
               className="h-full"
             >
-              {/* Scene content will go here */}
-              <div className="flex items-center justify-center h-full text-2xl text-slate-400">
-                Scene {currentScene + 1}
-              </div>
+              {renderScene()}
             </motion.div>
           </AnimatePresence>
 
