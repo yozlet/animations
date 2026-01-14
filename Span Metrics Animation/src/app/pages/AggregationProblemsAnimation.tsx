@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -41,16 +41,14 @@ export default function AggregationProblemsAnimation() {
 
   const handleCaptionToggle = () => {
     setShowCaptions(!showCaptions);
-    if (showCaptions) {
+  };
+
+  useEffect(() => {
+    if (!showCaptions) {
       console.log("📝 Presenter Mode: Captions hidden");
       console.log(`Scene ${currentScene + 1}:`, narrations[currentScene]);
     }
-  };
-
-  // Log narration to console when captions are off
-  if (!showCaptions) {
-    console.log(`Scene ${currentScene + 1}:`, narrations[currentScene]);
-  }
+  }, [showCaptions, currentScene]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-8">
