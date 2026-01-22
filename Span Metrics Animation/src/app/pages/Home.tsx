@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Activity, ArrowRight } from "lucide-react";
+import { Activity, ArrowRight, Database } from "lucide-react";
 import { motion } from "motion/react";
 
 interface Animation {
@@ -20,6 +20,15 @@ const animations: Animation[] = [
     path: "/span-metrics",
     icon: <Activity className="w-8 h-8" />,
     gradient: "from-blue-400 to-purple-400",
+  },
+  {
+    id: "aggregation-problems",
+    title: "The Aggregation Problem",
+    description:
+      "Watch how real-time aggregation solves query performance issues but creates impossible tradeoffs. See why you lose granularity, can't answer new questions, and face cardinality explosions.",
+    path: "/aggregation-problems",
+    icon: <Database className="w-8 h-8" />,
+    gradient: "from-orange-400 to-red-400",
   },
 ];
 
