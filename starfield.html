@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Starfield Warp + Nebula</title>
+        <style>
+            html,
+            body {
+                margin: 0;
+                height: 100%;
+                background: #000;
+                overflow: hidden;
+            }
+            canvas {
+                display: block;
+            }
+            .hud {
+                position: fixed;
+                left: 12px;
+                bottom: 12px;
+                color: rgba(255, 255, 255, 0.75);
+                font:
+                    12px system-ui,
+                    -apple-system,
+                    Segoe UI,
+                    Roboto,
+                    Arial,
+                    sans-serif;
+                user-select: none;
+                pointer-events: none;
+                text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+            }
+            .hint {
+                opacity: 0.75;
+                margin-top: 4px;
+            }
+            kbd {
+                background: rgba(255, 255, 255, 0.12);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-bottom-color: rgba(255, 255, 255, 0.08);
+                padding: 1px 6px;
+                border-radius: 6px;
+                font-size: 11px;
+            }
+        </style>
+    </head>
+    <body>
+        <canvas id="c"></canvas>
+        <div class="hud">
+            <div><strong>Starfield Warp</strong> + Nebula</div>
+            <div class="hint">
+                Move mouse to steer • Scroll to change speed •
+                <kbd>Space</kbd> pause • <kbd>R</kbd> reset
+            </div>
+        </div>
+
+        <script>
+            (() => {
+                const canvas = document.getElementById("c");
+                const ctx = canvas.getContext("2d", { alpha: false });
+
+                // --- Starfield config ---
+                const STAR_COUNT_BASE = 1200; // scales with screen area
+                const DEPTH = 1200;
+                const FOV = 520;
+                const MAX_TAIL = 0.85;
+                const BACKGROUND_FADE = 0.18; // lower = more motion blur
+                const VIGNETTE = true;
+
+                // --- Nebula config ---
+                // Rendered once into an offscreen canvas, then gently drifted/zoomed + blended each frame.
+                const NEBULA_ENABLED = true;
+                const NEBULA_ALPHA = 0.28; // overall strength (0..1)
+                const NEBULA_SCALE = 1.25; // bigger = softer
+                const NEBULA_DRIFT = 0.35; // pixels/sec-ish (scaled by dpr)
+                const NEBULA_ZOOM_BREATHE = 0.015; // subtle breathing zoom
+
+                let w = 0,
+                    h = 0,
+                    cx = 0,
+                    cy = 0,
+                    dpr = 1;
+                let stars = [];
+                let speed = 18;
+                let targetSpeed = speed;
+                let paused = false;
+
+                let steerX = 0,
+                    steerY = 0;
+                let targetSteerX = 0,
+                    targetSteerY = 0;
+
+                // Nebula state
+                let nebula = null; // offscreen canvas
+                let nebulaW = 0,
+                    nebulaH = 0;
+                let nebulaT = 0;
+                let nebulaOffsetX = 0,
+                    nebulaOffsetY = 0;
+
+                // --- Helpers ---
+                const rand = (min, max) => Math.random() * (max - min) + min;
+                const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+                function hash2(x, y) {
+                    // deterministic-ish pseudo-random from integer coords
+                    let n = (x * 374761393 + y * 668265263) | 0;
+                    n = (n ^ (n >> 13)) | 0;
+                    n = (n * 1274126177) | 0;
+                    return ((n ^ (n >> 16)) >>> 0) / 4294967295;
+                }
+
+                function valueNoise(x, y) {
+                    // 2D value noise with bilinear interpolation
+                    const x0 = Math.floor(x),
+                        y0 = Math.floor(y);
+                    const x1 = x0 + 1,
+                        y1 = y0 + 1;
+                    const sx = x - x0,
+                        sy = y - y0;
+
+                    const n00 = hash2(x0, y0);
+                    const n10 = hash2(x1, y0);
+                    const n01 = hash2(x0, y1);
+                    const n11 = hash2(x1, y1);
+
+                    // smoothstep
+                    const u = sx * sx * (3 - 2 * sx);
+                    const v = sy * sy * (3 - 2 * sy);
+
+                    const ix0 = n00 + (n10 - n00) * u;
+                    const ix1 = n01 + (n11 - n01) * u;
+                    return ix0 + (ix1 - ix0) * v;
+                }
+
+                function fbm(x, y) {
+                    // fractal brownian motion (few octaves for speed)
+                    let sum = 0;
+                    let amp = 0.55;
+                    let freq = 1.0;
+                    for (let i = 0; i < 5; i++) {
+                        sum += amp * valueNoise(x * freq, y * freq);
+                        freq *= 2.0;
+                        amp *= 0.5;
+                    }
+                    return sum;
+                }
+
+                function makeNebula() {
+                    // Make a larger texture so drift doesn't expose edges too quickly
+                    nebulaW = Math.floor(w * NEBULA_SCALE);
+                    nebulaH = Math.floor(h * NEBULA_SCALE);
+                    nebula = document.createElement("canvas");
+                    nebula.width = nebulaW;
+                    nebula.height = nebulaH;
+                    const nctx = nebula.getContext("2d", { alpha: true });
+
+                    const img = nctx.createImageData(nebulaW, nebulaH);
+                    const data = img.data;
+
+                    // Palette anchors (deep-space purples/blues/teals/pinks)
+                    const palette = [
+                        { r: 20, g: 10, b: 45 }, // deep purple
+                        { r: 30, g: 25, b: 90 }, // indigo
+                        { r: 10, g: 60, b: 90 }, // teal-blue
+                        { r: 120, g: 35, b: 140 }, // magenta
+                        { r: 255, g: 120, b: 70 }, // warm nebula edge
+                    ];
+
+                    // Noise coordinate scaling
+                    const s = 0.0045; // smaller => smoother blobs
+
+                    // Precompute a couple “domain warp” offsets for richer shapes
+                    const warp1x = rand(100, 500),
+                        warp1y = rand(100, 500);
+                    const warp2x = rand(600, 900),
+                        warp2y = rand(600, 900);
+
+                    for (let y = 0; y < nebulaH; y++) {
+                        for (let x = 0; x < nebulaW; x++) {
+                            const i = (y * nebulaW + x) * 4;
+
+                            // domain warp
+                            const wx = fbm(x * s + warp1x, y * s + warp1y);
+                            const wy = fbm(x * s + warp2x, y * s + warp2y);
+
+                            const n = fbm(x * s + wx * 1.6, y * s + wy * 1.6);
+
+                            // Shape it into cloudy islands
+                            let d = Math.pow(clamp(n, 0, 1), 2.2);
+
+                            // Fade edges so it blends into black
+                            const fx = Math.min(
+                                x / (nebulaW * 0.18),
+                                (nebulaW - x) / (nebulaW * 0.18),
+                            );
+                            const fy = Math.min(
+                                y / (nebulaH * 0.18),
+                                (nebulaH - y) / (nebulaH * 0.18),
+                            );
+                            const edge = clamp(Math.min(fx, fy), 0, 1);
+                            d *= edge;
+
+                            // pick color along palette using another noise field
+                            const c = fbm(
+                                x * s * 1.7 + 33.3,
+                                y * s * 1.7 + 77.7,
+                            );
+                            const t =
+                                clamp(c, 0, 0.9999) * (palette.length - 1);
+                            const a = Math.floor(t);
+                            const b = a + 1;
+                            const k = t - a;
+
+                            const ca = palette[a],
+                                cb = palette[b];
+                            const rr = ca.r + (cb.r - ca.r) * k;
+                            const gg = ca.g + (cb.g - ca.g) * k;
+                            const bb = ca.b + (cb.b - ca.b) * k;
+
+                            // Alpha: emphasize mid/high density, keep it subtle overall
+                            const alpha = clamp((d - 0.18) * 1.35, 0, 1);
+
+                            data[i + 0] = rr;
+                            data[i + 1] = gg;
+                            data[i + 2] = bb;
+                            data[i + 3] = Math.floor(alpha * 255);
+                        }
+                    }
+
+                    nctx.putImageData(img, 0, 0);
+
+                    // Soft glow pass
+                    nctx.globalCompositeOperation = "screen";
+                    nctx.filter = "blur(10px)";
+                    nctx.globalAlpha = 0.8;
+                    nctx.drawImage(nebula, 0, 0);
+                    nctx.filter = "blur(22px)";
+                    nctx.globalAlpha = 0.5;
+                    nctx.drawImage(nebula, 0, 0);
+
+                    // Restore defaults
+                    nctx.filter = "none";
+                    nctx.globalAlpha = 1;
+                    nctx.globalCompositeOperation = "source-over";
+                }
+
+                function spawnStar(randomZ = false) {
+                    const x = rand(-w, w);
+                    const y = rand(-h, h);
+                    const z = randomZ ? rand(1, DEPTH) : DEPTH;
+                    const mag = Math.pow(Math.random(), 2.2);
+                    return { x, y, z, px: 0, py: 0, mag };
+                }
+
+                function createStars(count) {
+                    const arr = new Array(count);
+                    for (let i = 0; i < count; i++) arr[i] = spawnStar(true);
+                    return arr;
+                }
+
+                function project(star, camX, camY) {
+                    const scale = FOV / star.z;
+                    return {
+                        x2d: cx + (star.x + camX) * scale,
+                        y2d: cy + (star.y + camY) * scale,
+                        scale,
+                    };
+                }
+
+                function drawVignette() {
+                    const g = ctx.createRadialGradient(
+                        cx,
+                        cy,
+                        Math.min(w, h) * 0.1,
+                        cx,
+                        cy,
+                        Math.max(w, h) * 0.65,
+                    );
+                    g.addColorStop(0, "rgba(0,0,0,0)");
+                    g.addColorStop(1, "rgba(0,0,0,0.55)");
+                    ctx.fillStyle = g;
+                    ctx.fillRect(0, 0, w, h);
+                }
+
+                function resize() {
+                    dpr = Math.max(
+                        1,
+                        Math.min(2, window.devicePixelRatio || 1),
+                    );
+                    w = Math.floor(window.innerWidth * dpr);
+                    h = Math.floor(window.innerHeight * dpr);
+                    canvas.width = w;
+                    canvas.height = h;
+                    canvas.style.width = window.innerWidth + "px";
+                    canvas.style.height = window.innerHeight + "px";
+                    cx = w / 2;
+                    cy = h / 2;
+
+                    const area = (w * h) / (1100 * 700);
+                    const count = Math.floor(
+                        STAR_COUNT_BASE * clamp(area, 0.6, 2.2),
+                    );
+                    stars = createStars(count);
+
+                    if (NEBULA_ENABLED) makeNebula();
+                }
+
+                // --- Input ---
+                window.addEventListener(
+                    "mousemove",
+                    (e) => {
+                        const mx = (e.clientX / window.innerWidth) * 2 - 1;
+                        const my = (e.clientY / window.innerHeight) * 2 - 1;
+                        targetSteerX = mx * 140;
+                        targetSteerY = my * 100;
+                    },
+                    { passive: true },
+                );
+
+                window.addEventListener(
+                    "wheel",
+                    (e) => {
+                        targetSpeed += (e.deltaY > 0 ? -1 : 1) * 3.2;
+                        targetSpeed = clamp(targetSpeed, 2, 70);
+                    },
+                    { passive: true },
+                );
+
+                window.addEventListener("keydown", (e) => {
+                    if (e.code === "Space") {
+                        paused = !paused;
+                        e.preventDefault();
+                    } else if (e.key.toLowerCase() === "r") {
+                        stars = createStars(stars.length);
+                        if (NEBULA_ENABLED) makeNebula();
+                    }
+                });
+
+                // --- Animation ---
+                let last = performance.now();
+                function frame(now) {
+                    requestAnimationFrame(frame);
+                    const dt = Math.min(0.033, (now - last) / 1000);
+                    last = now;
+
+                    // Smooth speed & steering
+                    speed += (targetSpeed - speed) * (1 - Math.pow(0.001, dt));
+                    steerX +=
+                        (targetSteerX - steerX) * (1 - Math.pow(0.001, dt));
+                    steerY +=
+                        (targetSteerY - steerY) * (1 - Math.pow(0.001, dt));
+
+                    // Slight motion blur for the whole scene
+                    ctx.fillStyle = `rgba(0,0,0,${BACKGROUND_FADE})`;
+                    ctx.fillRect(0, 0, w, h);
+
+                    // --- Nebula pass (behind stars) ---
+                    if (NEBULA_ENABLED && nebula) {
+                        nebulaT += dt;
+
+                        // Drift direction responds subtly to steering (feels like you’re “moving through” it)
+                        const driftX =
+                            NEBULA_DRIFT * dpr * dt + steerX * 0.0006;
+                        const driftY =
+                            NEBULA_DRIFT * dpr * dt + steerY * 0.0006;
+                        nebulaOffsetX = (nebulaOffsetX + driftX) % nebulaW;
+                        nebulaOffsetY = (nebulaOffsetY + driftY) % nebulaH;
+
+                        // Gentle breathing zoom
+                        const breathe =
+                            1 + Math.sin(nebulaT * 0.35) * NEBULA_ZOOM_BREATHE;
+                        const zoom = breathe * (1 + (speed - 18) * 0.002); // speed adds a touch of zoom
+
+                        ctx.save();
+                        ctx.globalCompositeOperation = "screen";
+                        ctx.globalAlpha = NEBULA_ALPHA;
+
+                        // Centered zoom
+                        ctx.translate(cx, cy);
+                        ctx.scale(zoom, zoom);
+                        ctx.translate(-cx, -cy);
+
+                        // Tile the nebula so drift never shows edges
+                        // We draw 4 tiles; that's enough to cover the viewport for typical offsets.
+                        const ox = -nebulaOffsetX;
+                        const oy = -nebulaOffsetY;
+                        const drawW = nebulaW;
+                        const drawH = nebulaH;
+
+                        ctx.drawImage(nebula, ox, oy, drawW, drawH);
+                        ctx.drawImage(nebula, ox + drawW, oy, drawW, drawH);
+                        ctx.drawImage(nebula, ox, oy + drawH, drawW, drawH);
+                        ctx.drawImage(
+                            nebula,
+                            ox + drawW,
+                            oy + drawH,
+                            drawW,
+                            drawH,
+                        );
+
+                        ctx.restore();
+                        ctx.globalCompositeOperation = "source-over";
+                    }
+
+                    if (paused) {
+                        if (VIGNETTE) drawVignette();
+                        return;
+                    }
+
+                    // Subtle center glow
+                    const glow = ctx.createRadialGradient(
+                        cx,
+                        cy,
+                        0,
+                        cx,
+                        cy,
+                        Math.max(w, h) * 0.28,
+                    );
+                    glow.addColorStop(0, "rgba(255,255,255,0.05)");
+                    glow.addColorStop(1, "rgba(255,255,255,0)");
+                    ctx.fillStyle = glow;
+                    ctx.fillRect(0, 0, w, h);
+
+                    // --- Stars ---
+                    for (let i = 0; i < stars.length; i++) {
+                        const s = stars[i];
+
+                        const prev = project(s, steerX, steerY);
+                        s.px = prev.x2d;
+                        s.py = prev.y2d;
+
+                        s.z -= speed * 60 * dt;
+                        if (s.z <= 1) {
+                            stars[i] = spawnStar(false);
+                            continue;
+                        }
+
+                        const p = project(s, steerX, steerY);
+                        if (
+                            p.x2d < -200 ||
+                            p.x2d > w + 200 ||
+                            p.y2d < -200 ||
+                            p.y2d > h + 200
+                        ) {
+                            stars[i] = spawnStar(false);
+                            continue;
+                        }
+
+                        const depthT = 1 - s.z / DEPTH;
+                        const alpha =
+                            clamp(0.15 + depthT * 0.95, 0, 1) *
+                            (0.35 + (1 - s.mag) * 0.65);
+                        const tail = clamp(
+                            depthT * (0.2 + speed / 70) * MAX_TAIL,
+                            0.04,
+                            0.95,
+                        );
+
+                        const cool = clamp(1 - depthT, 0, 1);
+                        const r = Math.floor(220 + 35 * (1 - cool));
+                        const g = Math.floor(220 + 25 * (1 - cool));
+                        const b = 255;
+
+                        ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
+                        ctx.lineWidth = Math.max(1, p.scale * 1.35);
+
+                        const x1 = s.px + (p.x2d - s.px) * (1 - tail);
+                        const y1 = s.py + (p.y2d - s.py) * (1 - tail);
+
+                        ctx.beginPath();
+                        ctx.moveTo(x1, y1);
+                        ctx.lineTo(p.x2d, p.y2d);
+                        ctx.stroke();
+                    }
+
+                    if (VIGNETTE) drawVignette();
+                }
+
+                window.addEventListener("resize", resize);
+                resize();
+
+                ctx.fillStyle = "#000";
+                ctx.fillRect(0, 0, w, h);
+
+                requestAnimationFrame(frame);
+            })();
+        </script>
+    </body>
+</html>
